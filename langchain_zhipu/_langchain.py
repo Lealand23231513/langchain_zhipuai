@@ -9,9 +9,28 @@ from langchain_core.language_models.chat_models import (
 
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.pydantic_v1 import BaseModel, Field, root_validator
-
+from langchain_core.tools import BaseTool
+from langchain_core.runnables import Runnable
+from langchain_core.language_models import LanguageModelInput
+from langchain_core.utils.function_calling import (
+    convert_to_openai_tool,
+)
 # common types
-from typing import Type, Any, Mapping, Dict, Iterator, List, Optional, cast
+from typing import (
+    Type, 
+    Any, 
+    Mapping, 
+    Dict, 
+    Iterator, 
+    List, 
+    Optional, 
+    cast, 
+    Sequence, 
+    Union, 
+    Callable,
+    Literal,
+)
+
 
 # async
 import asyncio
@@ -159,7 +178,7 @@ class ChatZhipuAI(BaseChatModel):
     client: Any = None
     """访问智谱AI的客户端"""
     
-    api_key: str = None
+    api_key: str|None = None
 
     model: str = Field(default="glm-3-turbo")
     """所要调用的模型编码"""
@@ -222,7 +241,6 @@ class ChatZhipuAI(BaseChatModel):
             "model",
             "request_id",
             "do_sample",
-            "api_key",
             "temperature",
             "top_p",
             "max_tokens",
@@ -392,3 +410,52 @@ class ChatZhipuAI(BaseChatModel):
             if run_manager:
                 await run_manager.on_llm_new_token(chunk.text, chunk=chunk)
             yield chunk
+    
+    def bind_tools(
+        self,
+        tools: Sequence[Union[Dict[str, Any], Type[BaseModel], Callable, BaseTool]],
+        *,
+        tool_choice: Optional[Union[dict, str, Literal["auto"]]] = None, # 智谱AI只支持'auto'
+        **kwargs: Any,
+    ) -> Runnable[LanguageModelInput, BaseMessage]:
+        """Bind tool-like objects to this chat model.
+
+        Assumes model is compatible with OpenAI tool-calling API.
+
+        Args:
+            tools: A list of tool definitions to bind to this chat model.
+                Can be  a dictionary, pydantic model, callable, or BaseTool. Pydantic
+                models, callables, and BaseTools will be automatically converted to
+                their schema dictionary representation.
+            tool_choice: Which tool to require the model to call.
+                Must be the name of the single provided function or
+                "auto" to automatically determine which function to call
+                (if any), or a dict of the form:
+                {"type": "function", "function": {"name": <<tool_name>>}}.
+            kwargs: Any additional parameters to pass to the
+                :class:`~langchain.runnable.Runnable` constructor.
+        """
+
+        formatted_tools = [convert_to_openai_tool(tool) for tool in tools]
+        if tool_choice is not None:
+            if isinstance(tool_choice, str) and tool_choice not in ("auto",):
+                tool_choice = {"type": "function", "function": {"name": tool_choice}}
+            if isinstance(tool_choice, dict) and len(formatted_tools) != 1:
+                raise ValueError(
+                    "When specifying `tool_choice`, you must provide exactly one "
+                    f"tool. Received {len(formatted_tools)} tools."
+                )
+            if (
+                isinstance(tool_choice, dict)
+                and formatted_tools[0]["function"]["name"]
+                != tool_choice["function"]["name"]
+            ):
+                raise ValueError(
+                    f"Tool choice {tool_choice} was specified, but the only "
+                    f"provided tool was {formatted_tools[0]['function']['name']}."
+                )
+            kwargs["tool_choice"] = tool_choice
+        return super().bind(
+            tools=formatted_tools,
+            **kwargs,
+        )
